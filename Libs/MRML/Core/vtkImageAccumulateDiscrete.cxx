@@ -23,28 +23,42 @@ vtkStandardNewMacro(vtkImageAccumulateDiscrete);
 // Constructor sets default values
 vtkImageAccumulateDiscrete::vtkImageAccumulateDiscrete()
 {
+  this->NumberOfBins = 100;
 }
 
-#define  MAX_ACCUMULATION_BIN 65535
 //----------------------------------------------------------------------------
-void vtkImageAccumulateDiscrete::ExecuteInformation(vtkImageData *vtkNotUsed(input), 
+void vtkImageAccumulateDiscrete::ExecuteInformation(vtkImageData *input,
                                                     vtkImageData *output)
 {
   int ext[6];
   memset(ext, 0, 6*sizeof(int));
 
-  ext[1] = MAX_ACCUMULATION_BIN;
+  // Extent is the number of bins
+  ext[1] = NumberOfBins-1;
 
+  // Origin and spacing define the bin locations. Origin is the center of the first bin.
   vtkFloatingPointType origin[3], spacing[3];
-  spacing[0] = spacing[1] = spacing[2] = 1;
-  origin[0] = -32768;
-  origin[1] = origin[2] = 0;
+
+  double range[2];
+  input->GetScalarRange(range);
+
+  if (range[1] == range[0])
+  {
+    range[1] = range[0] + 1.0;
+  }
+
+  //std::cout << "Range = " << range[0] << ", " << range[1] << std::endl;
+  spacing[0] = (range[1] - range[0])/double(NumberOfBins);
+  spacing[1] = spacing[2] = 1.0;
+
+  origin[0] = range[0] + spacing[0]/2.0; // position of the bin center
+  origin[1] = origin[2] = 0.0;
 
   output->SetWholeExtent(ext);
   output->SetOrigin(origin);
   output->SetSpacing(spacing);
   output->SetNumberOfScalarComponents(1);
-  output->SetScalarType(VTK_INT);
+  output->SetScalarType(VTK_LONG); // datsets are getting big (large numbers of pixels)
 }
 
 //----------------------------------------------------------------------------
@@ -64,14 +78,12 @@ void vtkImageAccumulateDiscrete::ComputeInputUpdateExtent(int inExt[6],
 template <class T>
 static void vtkImageAccumulateDiscreteExecute(vtkImageAccumulateDiscrete *self,
                       vtkImageData *inData, T *inPtr,
-                      vtkImageData *outData, int *outPtr)
+                      vtkImageData *outData, long *outPtr)
 {
   int min0, max0, min1, max1, min2, max2;
   int idx0, idx1, idx2;
   vtkIdType inInc0, inInc1, inInc2;
   T *inPtr0, *inPtr1, *inPtr2;
-  vtkFloatingPointType *origin;
-  int offset;
   int outExt[6];
   unsigned long count = 0;
   unsigned long target;
@@ -79,14 +91,23 @@ static void vtkImageAccumulateDiscreteExecute(vtkImageAccumulateDiscrete *self,
   // Zero count in every bin
   outData->GetExtent(min0, max0, min1, max1, min2, max2);
   memset((void *)outPtr, 0,
-     (max0-min0+1)*(max1-min1+1)*(max2-min2+1)*sizeof(int));
+     (max0-min0+1)*(max1-min1+1)*(max2-min2+1)*sizeof(long));
 
   // Get information to march through data
   inData->GetExtent(min0, max0, min1, max1, min2, max2);
   inData->GetIncrements(inInc0, inInc1, inInc2);
   outData->GetExtent(outExt);
-  origin = outData->GetOrigin();
-  offset = (int)(-origin[0]);
+
+  double range[2], rangeDiff;
+  inData->GetScalarRange(range);
+  if (range[1] == range[0])
+  {
+    range[1] = range[0] + 1.0;
+  }
+  rangeDiff = range[1] - range[0];
+
+  double dNumberOfBins = (double)self->GetNumberOfBins();
+  int lastBin = self->GetNumberOfBins()-1;
 
   // Ignore all components other than first one.
   // NOTE: GetIncrements takes the number of components into account
@@ -108,17 +129,25 @@ static void vtkImageAccumulateDiscreteExecute(vtkImageAccumulateDiscrete *self,
       inPtr0  = inPtr1;
       for (idx0 = min0; idx0 <= max0; ++idx0)
         {
-        int a = (int)(*inPtr0) + offset;
-        if ( a < MAX_ACCUMULATION_BIN && a > 0 )
-          {
+        // calculate the corresponding bin
+        long a = (long) (((*inPtr0 - range[0])/rangeDiff) * dNumberOfBins);
+
+        if ( a < dNumberOfBins && a >= 0 )
+        {
           outPtr[a]++;
-          }
+        }
+       else if (fabs(a - dNumberOfBins) < 1e-4)
+        {
+           // closed end range
+           outPtr[lastBin]++;
+        }
         inPtr0 += inInc0;
         }
       inPtr1 += inInc1;
       }
     inPtr2 += inInc2;
     }
+
 }
 
 
@@ -135,61 +164,61 @@ void vtkImageAccumulateDiscrete::ExecuteData(vtkDataObject *)
   outData->AllocateScalars();
 
   void *inPtr;
-  int *outPtr;
+  long *outPtr;
 
   inPtr  = inData->GetScalarPointer();
-  outPtr = (int *)outData->GetScalarPointer();
+  outPtr = (long *)outData->GetScalarPointer();
 
   // this filter expects that output is type int.
-  if (outData->GetScalarType() != VTK_INT)
+  if (outData->GetScalarType() != VTK_LONG)
   {
     vtkErrorMacro(<< "Execute: out ScalarType " << outData->GetScalarType()
           << " must be int\n");
     return;
   }
-  
+
   int type = inData->GetScalarType();
 
   switch (type)
   {
     case VTK_CHAR:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (char *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_CHAR:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (unsigned char *)(inPtr), outData, outPtr);
       break;
     case VTK_SHORT:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (short *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_SHORT:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (unsigned short *)(inPtr), outData, outPtr);
       break;
     case VTK_INT:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (int *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_INT:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (unsigned int *)(inPtr), outData, outPtr);
       break;
     case VTK_LONG:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (long *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_LONG:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (unsigned long *)(inPtr), outData, outPtr);
       break;
     case VTK_FLOAT:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (float *)(inPtr), outData, outPtr);
       break;
     case VTK_DOUBLE:
-      vtkImageAccumulateDiscreteExecute(this, 
+      vtkImageAccumulateDiscreteExecute(this,
               inData, (double *)(inPtr), outData, outPtr);
       break;
     default:

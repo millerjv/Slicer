@@ -32,16 +32,6 @@ vtkImageBimodalAnalysis::vtkImageBimodalAnalysis()
   this->Level     = 0;
   this->Min       = 0;
   this->Max       = 0;
-  this->Offset    = 0;
-  
-  for (int i = 0; i < 2; ++i)
-    {
-    this->SignalRange[i] = 0;
-    }
-  for (int i = 0; i < 6; ++i)
-    {
-    this->ClipExtent[i] = 0;
-    }
 }
 
 //----------------------------------------------------------------------------
@@ -57,31 +47,38 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
                       vtkImageData *inData, T *inPtr,
                       vtkImageData *outData, float *outPtr)
 {
-  int x, k, offset, clipExt[6];
+  int x, k;
   int min0, max0, min1, max1, min2, max2;
   int noise = 1, width = 5;
-  float fwidth = 1.0 / 5.0;
-  T tmp, minSignal, maxSignal;
+
+  T tmp;
   vtkFloatingPointType sum, wsum;
   int ct = (self->GetModality() == VTK_BIMODAL_MODALITY_CT) ? 1 : 0;
-  int centroid, noiseCentroid, trough, window, threshold, min, max;
+  double centroid, noiseCentroid, trough, window, threshold, min, max;
   vtkFloatingPointType origin[3], spacing[3];
+
+  // inData->GetExtent(min0, max0, min1, max1, min2, max2);
+  // for (unsigned int ii = min0; ii <=max0; ++ii)
+  //   std::cout << "[" << ii << "] = " << inPtr[ii]  << std::endl;
 
   // Process x dimension only
   outData->GetExtent(min0, max0, min1, max1, min2, max2);
   inData->GetOrigin(origin);
   inData->GetSpacing(spacing);
 
-  offset = (int)origin[0];
 
   // Zero output
-  memset((void *)outPtr, 0, (max0-min0+1)*sizeof(int));
+  memset((void *)outPtr, 0, (max0-min0+1)*sizeof(float));
 
-  // For CT data, ignore -32768
-  if (ct)
-    {
-    min0 = 1;
-    }
+  // For CT data, ignore -32768 (min of data is lower bound of histogram, origin - spacing/2)
+  //
+  // Disabling for now.  The value -32768 is sometimes used to fill the corners of a CT image.  But if don't
+  // really know it is CT, then this does more harm than good.
+  //
+  // if (ct && (fabs(origin[0] - spacing[0]/2.0 + 32768) < 1e-4))
+  //   {
+  //   min0 = 1;
+  //   }
 
   // Find min (first non-zero value in histogram)
   min = x = min0;
@@ -106,13 +103,22 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
     }
 
   // Smooth
+  long cnt;
   for (x = min; x <= max; x++)
     {
-    for (k=0; k < width; k++) 
+    cnt = 0;
+    for (k=0; k < width; k++)
       {
-      outPtr[x] += (float)inPtr[x+k];
+        if (x+k < max0)
+        {
+          outPtr[x] += (float)inPtr[x+k];
+          ++cnt;
+        }
       }
-    outPtr[x] *= fwidth;
+    if (cnt > 0)
+      {
+      outPtr[x] /= (double) cnt;
+      }
     }
 
   // Find first trough of smoothed histogram
@@ -131,7 +137,7 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
           }
         }
       }
-    else 
+    else
       {
       if (outPtr[x] < outPtr[x+1])
         {
@@ -162,18 +168,9 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
   // Compute centroid of the histogram that FOLLOWS the trough
   // (signal lobe, and not noise lobe)
   wsum = sum = 0;
-  minSignal = maxSignal = inPtr[trough];
   for (x=trough; x <= max; x++)
     {
     tmp = inPtr[x];
-    if (tmp > maxSignal)
-      {
-      maxSignal = tmp;
-      }
-    else if (tmp < minSignal)
-      {
-      minSignal = tmp;
-      }
     wsum += (vtkFloatingPointType)x*tmp;
     sum  += (vtkFloatingPointType)  tmp;
     }
@@ -188,34 +185,30 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
 
   // Threshold
   threshold = trough;
-  
+
   // Compute the window as twice the width as the smaller half
   // of the signal lobe
   if (centroid - noiseCentroid < max - centroid)
     {
     window = (centroid - noiseCentroid)*2;
     }
-  else 
+  else
     {
     window = (max - centroid)*2;
     }
 
-  // Record findings
-  self->SetOffset(offset);
-  self->SetThreshold(threshold + offset);
-  self->SetMin(min + offset);
-  self->SetMax(max + offset);
-  self->SetLevel(centroid + offset);
-  self->SetWindow(window);
-  self->SetSignalRange((int)minSignal, (int)maxSignal);
+  // Record findings (in original intensities, not bins)
+  self->SetThreshold(origin[0] + spacing[0]*threshold);
+  self->SetMin(origin[0] + min*spacing[0] - spacing[0]/2.0);      // lower bound of first bin
+  self->SetMax(origin[0] + max*spacing[0] + spacing[0]/2.0);    // upper bound of first bin
+  self->SetLevel(origin[0] + centroid*spacing[0]);
+  self->SetWindow(spacing[0]*window);
 
-  outData->GetExtent(clipExt);
-  clipExt[0] = min;
-  clipExt[1] = max;
-  self->SetClipExtent(clipExt);
+  //std::cout << "min bin, max bin = " << min << ", " << max << std::endl;
+  //self->Print(std::cout);
 }
 
-    
+
 
 //----------------------------------------------------------------------------
 // This method is passed a input and output Data, and executes the filter
@@ -228,13 +221,13 @@ void vtkImageBimodalAnalysis::ExecuteData(vtkDataObject *out)
   vtkImageData *inData = this->GetInput();
   void *inPtr;
   float *outPtr;
-  
+
   outData->SetExtent(outData->GetWholeExtent());
   outData->AllocateScalars();
 
   inPtr  = inData->GetScalarPointer();
   outPtr = (float *)outData->GetScalarPointer();
-  
+
   // Components turned into x, y and z
   int c = inData->GetNumberOfScalarComponents();
   if (c > 1)
@@ -253,43 +246,43 @@ void vtkImageBimodalAnalysis::ExecuteData(vtkDataObject *out)
   switch (inData->GetScalarType())
   {
     case VTK_CHAR:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (char *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_CHAR:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (unsigned char *)(inPtr), outData, outPtr);
       break;
     case VTK_SHORT:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (short *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_SHORT:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (unsigned short *)(inPtr), outData, outPtr);
       break;
     case VTK_INT:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (int *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_INT:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (unsigned int *)(inPtr), outData, outPtr);
       break;
     case VTK_LONG:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (long *)(inPtr), outData, outPtr);
       break;
     case VTK_UNSIGNED_LONG:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (unsigned long *)(inPtr), outData, outPtr);
       break;
     case VTK_FLOAT:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (float *)(inPtr), outData, outPtr);
       break;
     case VTK_DOUBLE:
-      vtkImageBimodalAnalysisExecute(this, 
+      vtkImageBimodalAnalysisExecute(this,
               inData, (double *)(inPtr), outData, outPtr);
       break;
     default:
@@ -304,14 +297,11 @@ void vtkImageBimodalAnalysis::PrintSelf(ostream& os, vtkIndent indent)
   this->Superclass::PrintSelf(os,indent);
 
   os << indent << "Modality: " << this->Modality << " (" << (this->Modality == VTK_BIMODAL_MODALITY_CT ? "CT" : "MR") << ")\n";
-  os << indent << "Offset: " << this->Offset << "\n";
   os << indent << "Threshold: " << this->Threshold << "\n";
   os << indent << "Window: " << this->Window << "\n";
   os << indent << "Level: " << this->Level << "\n";
   os << indent << "Min: " << this->Min << "\n";
   os << indent << "Max: " << this->Max << "\n";
-  os << indent << "ClipExtent: " << this->ClipExtent[0] << "," << this->ClipExtent[1] << "," << this->ClipExtent[2] << "," << this->ClipExtent[3] << "," << this->ClipExtent[4] << "," << this->ClipExtent[5] << "\n";
-  os << indent << "SignalRange: " << this->SignalRange[0] << "," << this->SignalRange[1] << "\n";
-    
+
 }
 

@@ -38,35 +38,29 @@ public:
   vtkTypeMacro(vtkImageBimodalAnalysis,vtkImageToImageFilter);
   void PrintSelf(ostream& os, vtkIndent indent);
 
-  /// 
+  ///
   /// Set the type of data, if known
   vtkSetMacro(Modality, int);
   vtkGetMacro(Modality, int);
   void SetModalityToMR() {this->SetModality(VTK_BIMODAL_MODALITY_MR);};
   void SetModalityToCT() {this->SetModality(VTK_BIMODAL_MODALITY_CT);};
- 
-  /// 
-  /// Get stats
-  vtkGetMacro(Threshold, int);
-  vtkGetMacro(Window, int);
-  vtkGetMacro(Level, int);
-  vtkGetMacro(Min, int);
-  vtkGetMacro(Max, int);
-  vtkGetVectorMacro(SignalRange, int, 2);
-  vtkGetVectorMacro(ClipExtent, int, 6);
 
-    vtkGetMacro(Offset, int);
-    vtkSetMacro(Offset, int);
-    
-  /// 
-  /// Ideally this should not be public API
-  vtkSetMacro(Threshold, int);
-  vtkSetMacro(Window, int);
-  vtkSetMacro(Level, int);
-  vtkSetMacro(Min, int);
-  vtkSetMacro(Max, int);
-  vtkSetVector2Macro(SignalRange, int);
-  vtkSetVectorMacro(ClipExtent, int, 6);
+  ///
+  /// Get stats
+  vtkGetMacro(Threshold, double);
+  vtkGetMacro(Window, double);
+  vtkGetMacro(Level, double);
+  vtkGetMacro(Min, double);
+  vtkGetMacro(Max, double);
+
+  ///
+  /// Set stats
+  vtkSetMacro(Threshold, double);
+  vtkSetMacro(Window, double);
+  vtkSetMacro(Level, double);
+  vtkSetMacro(Min, double);
+  vtkSetMacro(Max, double);
+
 
 protected:
   vtkImageBimodalAnalysis();
@@ -74,15 +68,12 @@ protected:
 
   int Modality;
 
-  int Threshold;
-  int Window;
-  int Level;
-  int Min;
-  int Max;
-  int ClipExtent[6];
-  int SignalRange[2];
+  double Threshold;
+  double Window;
+  double Level;
+  double Min;
+  double Max;
 
-    int Offset;
 
   void ExecuteInformation(vtkImageData *input, vtkImageData *output);
   void ExecuteInformation(){this->Superclass::ExecuteInformation();};
