@@ -54,12 +54,12 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
   T tmp;
   vtkFloatingPointType sum, wsum;
   int ct = (self->GetModality() == VTK_BIMODAL_MODALITY_CT) ? 1 : 0;
-  double centroid, noiseCentroid, trough, window, threshold, min, max;
+  int centroid, noiseCentroid, trough, window, threshold, min, max;
   vtkFloatingPointType origin[3], spacing[3];
 
   // inData->GetExtent(min0, max0, min1, max1, min2, max2);
   // for (unsigned int ii = min0; ii <=max0; ++ii)
-  //   std::cout << "[" << ii << "] = " << inPtr[ii]  << std::endl;
+  //    std::cout << "[" << ii << "] = " << inPtr[ii]  << std::endl;
 
   // Process x dimension only
   outData->GetExtent(min0, max0, min1, max1, min2, max2);
@@ -103,23 +103,37 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
     }
 
   // Smooth
-  long cnt;
-  for (x = min; x <= max; x++)
-    {
-    cnt = 0;
-    for (k=0; k < width; k++)
+  bool smooth = false;
+  if (smooth)
+  {
+    // smooth the histogram before locating the trough.  not needed when using a small number of bins
+    long cnt;
+    for (x = min; x <= max; x++)
       {
-        if (x+k < max0)
+      cnt = 0;
+      for (k=0; k < width; k++)
         {
-          outPtr[x] += (float)inPtr[x+k];
-          ++cnt;
+          if (x+k < max0)
+          {
+            outPtr[x] += (float)inPtr[x+k];
+            ++cnt;
+          }
+        }
+      if (cnt > 0)
+        {
+        outPtr[x] /= (double) cnt;
         }
       }
-    if (cnt > 0)
+ }
+ else
+ {
+  // not smoothing, just copy the data
+  for (x = min; x <= max; x++)
       {
-      outPtr[x] /= (double) cnt;
+      outPtr[x] = (float)inPtr[x];
       }
-    }
+ }
+
 
   // Find first trough of smoothed histogram
   x = min;
@@ -204,8 +218,8 @@ static void vtkImageBimodalAnalysisExecute(vtkImageBimodalAnalysis *self,
   self->SetLevel(origin[0] + centroid*spacing[0]);
   self->SetWindow(spacing[0]*window);
 
-  //std::cout << "min bin, max bin = " << min << ", " << max << std::endl;
-  //self->Print(std::cout);
+  // std::cout << "min bin, max bin, threshold, window, level = " << min << ", " << max << ", " << threshold << ", " << window << ", " << centroid << std::endl;
+  // self->Print(std::cout);
 }
 
 
