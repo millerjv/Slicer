@@ -547,9 +547,6 @@ class PaintEffectTool(LabelEffect.LabelEffectTool):
      - apply the threshold if selected
     """
 
-    # debug
-    # print "x=%f, y=%f" % (x,y)
-
     sliceLogic = self.sliceWidget.sliceLogic()
     sliceNode = sliceLogic.GetSliceNode()
     labelLogic = sliceLogic.GetLabelLayer()
@@ -661,10 +658,6 @@ class PaintEffectTool(LabelEffect.LabelEffectTool):
     self.painter.SetThresholdPaint(paintThreshold)
     self.painter.SetThresholdPaintRange(paintThresholdMin, paintThresholdMax)
 
-    #print "tl[0]=%f  tr[0]=%f  bl[0]=%f  br[0]=%f" % (tl[0], tr[0], bl[0], br[0])
-    #print "tl[1]=%f  tr[1]=%f  bl[1]=%f  br[1]=%f" % (tl[1], tr[1], bl[1], br[1])
-    #print "tl[2]=%f  tr[2]=%f  bl[2]=%f  br[2]=%f" % (tl[2], tr[2], bl[2], br[2])
-
     if bSphere:  # fill volume of a sphere ratherthan a circle on the currently displayed image slice
         # Algorithm:
         ###########################
@@ -683,19 +676,16 @@ class PaintEffectTool(LabelEffect.LabelEffectTool):
         dx1=brushCenter1[0]-brushCenter2[0]
         dx2=brushCenter1[1]-brushCenter2[1]
         dx3=brushCenter1[2]-brushCenter2[2]
-        numZVoxelsIn100slices = sqrt(dx1*dx1+dx2*dx2+dx3*dx3)  # compute L2 norm
-        if numZVoxelsIn100slices==0:
+        distanceSpannedBy100Slices = sqrt(dx1*dx1+dx2*dx2+dx3*dx3)  # compute L2 norm
+        if distanceSpannedBy100Slices==0:
             zVoxelSize_mm=1
         else:
-            zVoxelSize_mm = 100/numZVoxelsIn100slices
+            zVoxelSize_mm = 100/distanceSpannedBy100Slices
         # --
         # Compute number of slices spanned by sphere
         nNumSlicesInEachDirection=brushRadius / zVoxelSize_mm;
         nNumSlicesInEachDirection=nNumSlicesInEachDirection-1
-        #print "	nNumSlicesInEachDirection=%d " % nNumSlicesInEachDirection
         sliceOffsetArray=numpy.concatenate((-1*numpy.arange(1,nNumSlicesInEachDirection+1,),  numpy.arange(1,nNumSlicesInEachDirection+1)))
-        #print "sliceOffsetArray = "
-        #print sliceOffsetArray
         for iSliceOffset in sliceOffsetArray:
             # x,y uses slice (canvas) coordinate system and actually has a 3rd z component (index into the slice you're looking at)
             # hence xyToRAS is really performing xyzToRAS.   RAS is patient world coordinate system. Note the 1 is because the trasform uses homogeneous coordinates
@@ -705,9 +695,7 @@ class PaintEffectTool(LabelEffect.LabelEffectTool):
             zOffset_mm=zVoxelSize_mm*iSliceOffset;
             brushRadiusOffset=sqrt(brushRadius*brushRadius - zOffset_mm*zOffset_mm)
             self.painter.SetBrushRadius( brushRadiusOffset )
-            #print "zOffset_mm = %f " % zOffset_mm
-            #print "ibrushCenter = [%f,%f,%f] " % (iBrushCenter[0],iBrushCenter[1],iBrushCenter[2])
-            #print "brushRadiusOffset = %f " % brushRadiusOffset
+
             # --
             tlIJKtemp = xyToIJK.MultiplyPoint( (left, top, iSliceOffset, 1) )
             trIJKtemp = xyToIJK.MultiplyPoint( (right, top, iSliceOffset, 1) )
