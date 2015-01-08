@@ -24,8 +24,10 @@
 #include <vtkMRMLDisplayNode.h>
 #include <vtkMRMLFiducialListNode.h>
 #include <vtkMRMLModelHierarchyNode.h>
+#include <vtkMRMLModelNode.h>
 #include <vtkMRMLROIListNode.h>
 #include <vtkMRMLStorageNode.h>
+#include <vtkMRMLModelStorageNode.h>
 #include <vtkMRMLTransformNode.h>
 
 // VTK includes
@@ -76,6 +78,7 @@ struct DigitsToCharacters
 };
 
 typedef std::pair<vtkSlicerCLIModuleLogic *, vtkMRMLCommandLineModuleNode *> LogicNodePair;
+class MRMLIDMap : public std::map<std::string, std::string> {};
 
 //---------------------------------------------------------------------------
 class vtkSlicerCLIRescheduleCallback : public vtkCallbackCommand
@@ -903,7 +906,6 @@ void vtkSlicerCLIModuleLogic::ApplyTask(void *clientdata)
 
   // map to keep track of the MRML Ids on the main scene to the MRML
   // Ids in the miniscene sent to the module
-  typedef std::map<std::string, std::string> MRMLIDMap;
   MRMLIDMap sceneToMiniSceneMap;
 
   // Mini-scene used to communicate a subset of the main scene to the module
@@ -912,6 +914,7 @@ void vtkSlicerCLIModuleLogic::ApplyTask(void *clientdata)
   vtkNew<vtkMRMLScene> miniscene;
   std::string minisceneFilename
     = this->ConstructTemporarySceneFileName(miniscene.GetPointer());
+  miniscene->SetRootDirectory(vtksys::SystemTools::GetParentDirectory(minisceneFilename.c_str()).c_str());
 
   // vector of files to delete
   std::set<std::string> filesToDelete;
@@ -981,9 +984,19 @@ void vtkSlicerCLIModuleLogic::ApplyTask(void *clientdata)
     }
 
 
+  // Define a temporary directory for storing files
+  // by default use the current directory for storing files
+  std::string temporaryDirectory = ".";
+  vtkSlicerApplicationLogic* appLogic = this->GetApplicationLogic();
+  if (appLogic)
+    {
+    temporaryDirectory = appLogic->GetTemporaryPath();
+    }
+
   // write out the input datasets
   //
   //
+
   std::set<std::string> MemoryTransferPossible;
   MemoryTransferPossible.insert("vtkMRMLScalarVolumeNode");
   MemoryTransferPossible.insert("vtkMRMLVectorVolumeNode");
@@ -1064,27 +1077,11 @@ void vtkSlicerCLIModuleLogic::ApplyTask(void *clientdata)
         }
       }
 
+    // Add model hierarchies to the miniscene
     vtkMRMLModelHierarchyNode *mhnd = vtkMRMLModelHierarchyNode::SafeDownCast(nd);
     if (mhnd)
-      {
-      // model hierarchy nodes need to get put in a scene
-      vtkMRMLNode *cp = miniscene->CopyNode(nd);
-
-      // keep track of scene node corresponds to what the miniscene node
-      sceneToMiniSceneMap[nd->GetID()] = cp->GetID();
-
-      // also add any display node
-      vtkMRMLDisplayNode *dnd = mhnd->GetDisplayNode();
-      if (dnd)
-        {
-        vtkMRMLNode *dcp = miniscene->CopyNode(dnd);
-
-        vtkMRMLModelHierarchyNode *mhcp
-          = vtkMRMLModelHierarchyNode::SafeDownCast(cp);
-        vtkMRMLDisplayNode *d = vtkMRMLDisplayNode::SafeDownCast(dcp);
-
-        mhcp->SetAndObserveDisplayNodeID( d->GetID() );
-        }
+      {   
+      this->AddCompleteModelHierarchyToMiniScene(miniscene.GetPointer(), mhnd, &sceneToMiniSceneMap, filesToDelete);
       }
 
     // if the file is to be written, then write it
@@ -1176,7 +1173,23 @@ void vtkSlicerCLIModuleLogic::ApplyTask(void *clientdata)
   // write out the miniscene if needed
   if (miniscene->GetNumberOfNodes() > 0)
     {
-    miniscene->Commit( minisceneFilename.c_str() );
+      miniscene->Commit( minisceneFilename.c_str() );
+
+      // tell the storage nodes in the miniscene to write their data
+      vtkCollection *nodes = miniscene->GetNodes();
+      for (int n=0; n < nodes->GetNumberOfItems(); n++)
+      {
+        vtkMRMLNode* node = (vtkMRMLNode*) nodes->GetItemAsObject(n);
+
+        vtkMRMLStorableNode* storable = vtkMRMLStorableNode::SafeDownCast(node);
+        if (storable)
+        {
+          if (storable->GetStorageNode())
+          {
+            storable->GetStorageNode()->WriteData(storable);
+          }
+        }
+      }
     }
 
   // build the command line
@@ -1229,13 +1242,6 @@ void vtkSlicerCLIModuleLogic::ApplyTask(void *clientdata)
     for (int ii = 0; ii < 10; ii++)
       {
       code << alphanum[rand() % (sizeof(alphanum)-1)];
-      }
-    // by default use the current directory
-    std::string temporaryDirectory = ".";
-    vtkSlicerApplicationLogic* appLogic = this->GetApplicationLogic();
-    if (appLogic)
-      {
-      temporaryDirectory = appLogic->GetTemporaryPath();
       }
     std::string returnFile = temporaryDirectory + "/" + pidString.str()
       + "_" + code.str() + ".params";
@@ -2762,4 +2768,106 @@ void vtkSlicerCLIModuleLogic
     node->GetAutoRunDelay() + extraDelay,
     node, vtkMRMLCommandLineModuleNode::AutoRunEvent,
     reinterpret_cast<void*>(requestTime));
+}
+
+void vtkSlicerCLIModuleLogic::AddCompleteModelHierarchyToMiniScene(vtkMRMLScene *miniscene, vtkMRMLModelHierarchyNode *mhnd,
+                                                                   MRMLIDMap *sceneToMiniSceneMap, std::set<std::string> &filesToDelete)
+{
+    if (mhnd)
+      {   
+      // construct a list that includes this node and all its children
+      std::vector<vtkMRMLHierarchyNode*> hnodes;
+      mhnd->GetAllChildrenNodes(hnodes);
+      hnodes.insert(hnodes.begin(), mhnd);  // add the current node to the front of the vector
+
+      // copy the entire hierarchy into the miniscene, we assume the nodes are ordered such that parents appear before children
+      for (std::vector<vtkMRMLHierarchyNode*>::iterator it = hnodes.begin(); it != hnodes.end(); ++it)
+        {
+        vtkMRMLNode *tnd = *it;
+        vtkMRMLModelHierarchyNode *tmhnd = vtkMRMLModelHierarchyNode::SafeDownCast(tnd);
+
+        if (!tmhnd)
+          {
+          std::cerr << "Child is not a model hierarchy node." << std::endl;
+          continue;
+          }
+
+        // model hierarchy nodes need to get put in a scene
+        vtkMRMLNode *cp = miniscene->CopyNode(tnd);
+        vtkMRMLModelHierarchyNode *mhcp  = vtkMRMLModelHierarchyNode::SafeDownCast(cp);
+
+        // wire the parent relationship (again, we assume the parents appeared in the list before the children)
+        vtkMRMLNode *p = tmhnd->GetParentNode();
+        if (p)
+        {
+          // find parent in the sceneToMiniSceneMap
+          MRMLIDMap::iterator mit = sceneToMiniSceneMap->find(p->GetID());
+          if (mit != sceneToMiniSceneMap->end())
+          {
+            mhcp->SetParentNodeID((*mit).second.c_str());
+          }
+        }
+
+        // keep track of what scene node corresponds to what miniscene node
+        (*sceneToMiniSceneMap)[tnd->GetID()] = cp->GetID();
+
+        // also add any display node
+        vtkMRMLDisplayNode *dnd = tmhnd->GetDisplayNode();
+        if (dnd)
+          {
+          vtkMRMLNode *dcp = miniscene->CopyNode(dnd);
+
+          vtkMRMLDisplayNode *d = vtkMRMLDisplayNode::SafeDownCast(dcp);
+
+          mhcp->SetAndObserveDisplayNodeID( d->GetID() );
+          }
+
+
+          // add the actual model node
+          vtkMRMLDisplayableNode* tmnd = tmhnd->GetDisplayableNode();
+          if (tmnd)
+          {
+            vtkMRMLModelNode *mnd = vtkMRMLModelNode::SafeDownCast(tmnd);
+            if (mnd)
+              {
+              vtkMRMLNode *mcp = miniscene->CopyNode(mnd);
+              vtkMRMLModelNode *tmcp = vtkMRMLModelNode::SafeDownCast(mcp);
+
+              // add the display node for the model to the miniscene
+              vtkMRMLDisplayNode *mdnd = mnd->GetDisplayNode();
+              if (mdnd && tmcp)
+                {
+                vtkMRMLNode *mdcp = miniscene->CopyNode(mdnd);
+
+                vtkMRMLDisplayNode *d = vtkMRMLDisplayNode::SafeDownCast(mdcp);
+
+                tmcp->SetAndObserveDisplayNodeID( d->GetID());
+                }
+
+              // add the storage node for the model to the miniscene
+              vtkMRMLStorageNode *msnd = mnd->GetStorageNode();
+              if (msnd)
+                {
+                vtkMRMLNode *mscp = miniscene->CopyNode(msnd);
+
+                vtkMRMLModelStorageNode *s = vtkMRMLModelStorageNode::SafeDownCast(mscp);
+                std::string fname
+                    = this->ConstructTemporaryFileName("geometry", "", tmcp->GetID(), std::vector<std::string>(),
+                                                                                  CommandLineModule);
+
+                s->SetFileName(fname.c_str());
+                filesToDelete.insert(fname);
+                if (tmcp)
+                  {
+                  tmcp->SetAndObserveStorageNodeID( s->GetID());
+                  }
+                }
+
+
+              // keep track of the what scene node corresponds to what miniscene node
+              (*sceneToMiniSceneMap)[mnd->GetID()] = mcp->GetID();
+              }
+            }
+          }
+      }
 }
